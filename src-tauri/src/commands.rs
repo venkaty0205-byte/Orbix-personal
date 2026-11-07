@@ -4,13 +4,12 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Window};
 use windows::core::Interface;
-use windows::Win32::Foundation::{HWND, LPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, MB_ICONEXCLAMATION};
-
-#[link(name = "user32")]
-extern "system" {
-    fn MessageBeep(sound_type: u32) -> i32;
-}
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM};
+use windows::Win32::Media::Audio::{
+    PlaySoundW, SND_ASYNC, SND_LOOP, SND_MEMORY, SND_SYNC, SND_SYSTEM,
+};
+use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
+use windows::core::PCWSTR;
 
 use crate::services::{
     disable_dock_appbar, enum_windows_proc, register_dock_appbar, sync_overlays,
@@ -26,6 +25,28 @@ use std::collections::HashMap;
 
 static TASK_ALARM_STOP: AtomicBool = AtomicBool::new(true);
 static TASK_ALARM_THREAD: OnceLock<Mutex<Option<JoinHandle<()>>>> = OnceLock::new();
+static TASK_ALARM_WAV: &[u8] = include_bytes!("../resources/task-reminder.wav");
+
+fn play_task_alarm_sound() {
+    unsafe {
+        let sound_data = PCWSTR(TASK_ALARM_WAV.as_ptr().cast());
+        let _ = PlaySoundW(
+            sound_data,
+            HINSTANCE::default(),
+            SND_MEMORY | SND_ASYNC | SND_LOOP | SND_SYSTEM,
+        );
+    }
+}
+
+fn stop_task_alarm_sound() {
+    unsafe {
+        let _ = PlaySoundW(
+            PCWSTR(std::ptr::null()),
+            HINSTANCE::default(),
+            SND_SYNC,
+        );
+    }
+}
 
 #[tauri::command]
 pub fn start_task_alarm() {
@@ -35,28 +56,24 @@ pub fn start_task_alarm() {
     let mut thread_slot = thread_slot;
     if let Some(previous) = thread_slot.take() {
         TASK_ALARM_STOP.store(true, Ordering::SeqCst);
+        stop_task_alarm_sound();
         let _ = previous.join();
     }
 
     TASK_ALARM_STOP.store(false, Ordering::SeqCst);
     *thread_slot = Some(thread::spawn(|| {
+        play_task_alarm_sound();
         while !TASK_ALARM_STOP.load(Ordering::SeqCst) {
-            unsafe {
-                let _ = MessageBeep(MB_ICONEXCLAMATION.0);
-            }
-            for _ in 0..14 {
-                if TASK_ALARM_STOP.load(Ordering::SeqCst) {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
+            thread::sleep(Duration::from_millis(100));
         }
+        stop_task_alarm_sound();
     }));
 }
 
 #[tauri::command]
 pub fn stop_task_alarm() {
     TASK_ALARM_STOP.store(true, Ordering::SeqCst);
+    stop_task_alarm_sound();
 }
 
 #[tauri::command]

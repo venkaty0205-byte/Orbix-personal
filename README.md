@@ -8,7 +8,8 @@ A personal Windows notch and floating dock based on [Orbix by Lukog10](https://g
 - The notch status chip shows the date and month instead of weather.
 - The expanded notch stays open until a desktop click outside it, with a smoother fade.
 - The Tasks & reminders panel no longer closes or changes mode just because the pointer leaves.
-- Scheduled tasks open an alarm popup and repeat a system bell until dismissed. Dismiss keeps the task; snooze lets you choose a delay each time.
+- Scheduled tasks open an alarm popup and loop a custom four-note bell until dismissed. Dismiss keeps the task; snooze lets you choose a delay each time.
+- A clipboard panel stores up to 40 recent text items locally, so they remain available after restart. Capture can be paused and history cleared.
 - The Apps/search launcher window has been removed.
 - Teal is the default accent color.
 

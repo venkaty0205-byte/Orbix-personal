@@ -37,7 +37,7 @@ import { useTrailingThrottle } from "./hooks/useTrailingThrottle";
 import { useAnnouncement } from "./hooks/useAnnouncement";
 import { reloadIfMirrorWasStale } from "./hooks/settingsMirror";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import type { WidgetConfig } from "./components/StatusWidgetConfig";
 import {
@@ -58,8 +58,11 @@ import {
 	Headphones,
 	Mic,
 	Zap,
-	Moon
+	Moon,
+	ClipboardList
 } from "lucide-react";
+import { isClipboardCaptureEnabled, rememberClipboardText } from "./components/clipboard/clipboardStore";
+import { ClipboardView } from "./components/clipboard/ClipboardView";
 
 // Pomodoro timer limit.
 const MAX_TIMER_SECONDS = 180 * 60;
@@ -369,7 +372,7 @@ interface ShelfItem {
 	timestamp: number;
 }
 
-type BloomMode = "music" | "calendar" | "command-center" | "announcement" | "status" | "shelf" | "power" | "tasks" | "wallpaper";
+type BloomMode = "music" | "calendar" | "command-center" | "announcement" | "status" | "shelf" | "power" | "tasks" | "clipboard" | "wallpaper";
 
 // The shelf is a short-lived stash: one row, newest first, oldest evicted.
 const SHELF_MAX_ITEMS = 10;
@@ -429,6 +432,33 @@ const TitleMarquee = ({ title }: { title: string }) => {
 function App() {
 	useEffect(() => {
 		return initTheme("notch");
+	}, []);
+
+	useEffect(() => {
+		let disposed = false;
+		let readingClipboard = false;
+		let lastClipboardText = "";
+		const captureClipboard = async () => {
+			if (readingClipboard || !isClipboardCaptureEnabled()) return;
+			readingClipboard = true;
+			try {
+				const text = await readText();
+				if (!disposed && text && text !== lastClipboardText) {
+					lastClipboardText = text;
+					rememberClipboardText(text);
+				}
+			} catch {
+				// Clipboard access is optional until Windows grants it to the app.
+			} finally {
+				readingClipboard = false;
+			}
+		};
+		void captureClipboard();
+		const timer = window.setInterval(() => void captureClipboard(), 2000);
+		return () => {
+			disposed = true;
+			window.clearInterval(timer);
+		};
 	}, []);
 
 	const [time, setTime] = useState("");
@@ -1704,8 +1734,8 @@ function App() {
 		// Tasks take the former Pictures/wallpaper panel position in the notch cycle.
 		const hasActiveMedia = mediaInfo.has_media && settingsMusicModeEnabled;
 		const modes: BloomMode[] = hasActiveMedia
-			? ["music", "command-center", "calendar", "shelf", "tasks", "power"]
-			: ["status", "command-center", "calendar", "shelf", "tasks", "power"];
+			? ["music", "command-center", "calendar", "shelf", "tasks", "clipboard", "power"]
+			: ["status", "command-center", "calendar", "shelf", "tasks", "clipboard", "power"];
 		return modes.filter((m) => {
 			if (m === "power" && !settingsPowerModeEnabled) return false;
 			if (m === "wallpaper") return false;
@@ -2553,6 +2583,7 @@ function App() {
 		if (bloomMode === "command-center" && isHovered) return 365;
 		if (bloomMode === "power" && isHovered) return 360;
 		if (bloomMode === "tasks") return 640;
+		if (bloomMode === "clipboard") return 640;
 		if (bloomMode === "wallpaper") return 860;
 		if (bloomMode === "status" && isHovered) {
 			const totalWidgets = statusWidgets.left.length + statusWidgets.right.length;
@@ -2586,6 +2617,7 @@ function App() {
 		if (bloomMode === "command-center") return isHovered ? (ccSubView === "wifi" ? 400 : ccSubView === "bluetooth" ? 360 : 332) : 36;
 		if (bloomMode === "power") return isHovered ? 124 : 36;
 		if (bloomMode === "tasks") return 360;
+		if (bloomMode === "clipboard") return 360;
 		if (bloomMode === "wallpaper") return 320;
 		if (bloomMode === "status") return 36;
 		if (bloomMode === "music" && isHovered) {
@@ -2877,6 +2909,20 @@ function App() {
 																		{statusWidgets.left.map(renderStatusWidget)}
 																	</motion.div>
 																) : null}
+											{isHovered && (
+												<button
+													type="button"
+													className="clipboard-launch-button"
+													aria-label="Open clipboard history"
+													title="Clipboard history"
+													onClick={(event) => {
+														event.stopPropagation();
+														setBloomMode("clipboard");
+													}}
+												>
+													<ClipboardList size={14} />
+												</button>
+											)}
 															</div>
 
 															{/* Center - Time (always visible) */}
@@ -3594,6 +3640,11 @@ function App() {
 								<AnimatePresence>
 					{bloomMode === "tasks" && (
 						<TasksView onClose={() => setBloomMode(shelfRestingModeRef.current)} />
+									)}
+								</AnimatePresence>
+								<AnimatePresence>
+									{bloomMode === "clipboard" && (
+										<ClipboardView onClose={() => setBloomMode(shelfRestingModeRef.current)} />
 									)}
 								</AnimatePresence>
 								{taskAlarmQueue[0] && (
