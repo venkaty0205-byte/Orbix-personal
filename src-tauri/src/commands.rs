@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 46396)
-Total output lines: 5025
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -1332,7 +1329,2307 @@ pub(crate) fn browser_web_app_id_from_aumid(id: &str) -> Option<String> {
 /// True when a window AppUserModelID belongs to a browser-hosted app (installed
 /// PWA or Store PWA) instead of the browser itself. Regular Chromium windows
 /// carry only the browser id ("Chrome", "MSEdge", "Brave", ...), while PWA
-/// windows carry a web app id or a p…21396 tokens truncated…:core::HRESULT;
+/// windows carry a web app id or a package AUMID. Browser-generated ids are not
+/// always the canonical 32-character form (Brave uses `Brave._crx_<id>` with a
+/// shortened id), so the `_crx_` marker is checked directly.
+pub(crate) fn is_browser_pwa_aumid(id: &str) -> bool {
+    id.contains('!') || id.contains("_crx_") || browser_web_app_id_from_aumid(id).is_some()
+}
+
+unsafe fn pwa_icon_for_window(hwnd: HWND, process_path: &str) -> Option<String> {
+    // The window's own AppUserModelID is the most reliable identity: it is always
+    // present, unlike the process command line (Edge reuses its browser process).
+    match crate::utils::get_window_app_user_model_id(hwnd) {
+        Some(id) if id.contains('!') => {
+            if let Some(icon) = icon_from_aumid(&id) {
+                return Some(icon);
+            }
+        }
+        Some(id) if is_browser_pwa_aumid(&id) => {
+            // PWA window. The canonical app id is in the AUMID when available,
+            // otherwise it must come from the command line. That is safe here
+            // because this window is known to be a PWA and the profile lookup
+            // requires the `--app-id=` form of the executable's arguments.
+            let mut pid = 0u32;
+            windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 {
+                return None;
+            }
+            if let Some(app_id) = browser_web_app_id_from_aumid(&id) {
+                if let Some(icon_path) =
+                    find_browser_pwa_icon(process_path, &format!("--app-id={}", app_id))
+                {
+                    if let Some(icon) = crate::utils::image_file_to_base64(&icon_path) {
+                        return Some(icon);
+                    }
+                }
+            }
+            if let Some(command_line) = process_command_line(pid) {
+                if let Some(icon) = pwa_icon_from_command_line(process_path, &command_line) {
+                    return Some(icon);
+                }
+            }
+            return None;
+        }
+        // A regular browser window ("Chrome", "MSEdge", "Brave", ...). Chromium can
+        // host PWA windows in the same process as the browser, so the process
+        // command line may advertise an `--app-id` that does not belong to this
+        // window. Do not consult it; let the caller fall back to the window icon.
+        Some(_) => return None,
+        None => {}
+    }
+    // Fall back to the process command line for hosts that don't stamp the window.
+    let mut pid = 0u32;
+    windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return None;
+    }
+    let command_line = process_command_line(pid)?;
+    pwa_icon_from_command_line(process_path, &command_line)
+}
+
+/// Finds the icon Chromium stores for an installed web app in the browser profile.
+///
+/// Current layout: `<profile>/Web Applications/Manifest Resources/<app-id>/Icons/*.png`.
+/// Older Chrome builds used `Web Applications/<app-id>` / `_crx_<app-id>` with an `icon_256.png`.
+fn find_browser_pwa_icon(executable_path: &str, args: &str) -> Option<String> {
+    let app_id = extract_arg(args, "--app-id=")?;
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+
+    let chrome_base = format!("{}\\Google\\Chrome\\User Data", local);
+    let edge_base = format!("{}\\Microsoft\\Edge\\User Data", local);
+    let brave_base = format!("{}\\BraveSoftware\\Brave-Browser\\User Data", local);
+    let vivaldi_base = format!("{}\\Vivaldi\\User Data", local);
+    let browser_path = executable_path.to_lowercase();
+    let bases = if browser_path.contains("msedge") {
+        vec![edge_base, chrome_base]
+    } else if browser_path.contains("brave") {
+        vec![brave_base, chrome_base]
+    } else if browser_path.contains("vivaldi") {
+        vec![vivaldi_base, chrome_base]
+    } else {
+        vec![chrome_base, edge_base]
+    };
+
+    let profile =
+        extract_arg(args, "--profile-directory=").unwrap_or_else(|| "Default".to_string());
+
+    for base in bases {
+        if !std::path::Path::new(&base).is_dir() {
+            continue;
+        }
+
+        let mut profiles = vec![profile.clone()];
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !profiles.iter().any(|p| p.eq_ignore_ascii_case(&name)) {
+                        profiles.push(name);
+                    }
+                }
+            }
+        }
+
+        for prof in profiles {
+            let web_apps = std::path::Path::new(&base)
+                .join(&prof)
+                .join("Web Applications");
+            if !web_apps.is_dir() {
+                continue;
+            }
+
+            let candidates = [
+                web_apps.join("Manifest Resources").join(&app_id),
+                web_apps.join(&app_id),
+                web_apps.join(format!("_crx_{}", app_id)),
+            ];
+            for dir in candidates {
+                if let Some(icon) = find_largest_image_in_dir(&dir) {
+                    return Some(icon);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_largest_image_in_dir(dir: &std::path::Path) -> Option<String> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut best: Option<(u64, String)> = None;
+    collect_images(dir, 0, &mut best);
+    best.map(|(_, path)| path)
+}
+
+fn collect_images(dir: &std::path::Path, depth: u32, best: &mut Option<(u64, String)>) {
+    if depth > 3 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_images(&path, depth + 1, best);
+            continue;
+        }
+        let Some(ext) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+        else {
+            continue;
+        };
+        if !matches!(
+            ext.as_str(),
+            "png" | "ico" | "jpg" | "jpeg" | "bmp" | "webp"
+        ) {
+            continue;
+        }
+        let score = image_size_score(&path);
+        let is_better = match best.as_ref() {
+            Some((best_score, _)) => score > *best_score,
+            None => true,
+        };
+        if is_better {
+            *best = Some((score, path.to_string_lossy().to_string()));
+        }
+    }
+}
+
+/// Scores an icon file by the pixel dimensions encoded in its name (e.g. `256.png`, `192x192.png`).
+fn image_size_score(path: &std::path::Path) -> u64 {
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mut score: u64 = 0;
+    for token in name.split(|c: char| !c.is_ascii_digit() && c != 'x') {
+        if token.is_empty() {
+            continue;
+        }
+        if let Some(idx) = token.find('x') {
+            let (w, h) = token.split_at(idx);
+            let h = &h[1..];
+            if let (Ok(w), Ok(h)) = (w.parse::<u64>(), h.parse::<u64>()) {
+                score = score.max(w * h);
+            }
+        } else if let Ok(n) = token.parse::<u64>() {
+            score = score.max(n * n);
+        }
+    }
+    score
+}
+
+static LAST_ICON_SAVE_REQUEST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn schedule_icon_cache_save(app: AppHandle) {
+    let now = crate::utils::get_now_ms();
+    LAST_ICON_SAVE_REQUEST.store(now, Ordering::Relaxed);
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        let last = LAST_ICON_SAVE_REQUEST.load(Ordering::Relaxed);
+        if now == last || crate::utils::get_now_ms() - last >= 950 {
+            if let Ok(dir) = app.path().app_config_dir() {
+                let cache_path = dir.join("icons_cache.json");
+                if let Some(c) = crate::state::ICON_CACHE.get() {
+                    let snapshot = if let Ok(lock) = c.lock() {
+                        serde_json::to_string(&*lock).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    if !snapshot.is_empty() {
+                        let _ = tauri::async_runtime::spawn_blocking(move || {
+                            let _ = std::fs::write(&cache_path, snapshot);
+                        })
+                        .await;
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[tauri::command]
+pub async fn get_app_icon(
+    app: AppHandle,
+    path: String,
+    name: Option<String>,
+    hwnd: Option<isize>,
+) -> Result<Option<String>, String> {
+    let cache_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let cache_path = cache_dir.join("icons_cache.json");
+    let cache_key = get_cache_key(&path, name.as_deref());
+
+    // Strategy 0: Check for custom icon first
+    let custom_icons_dir = cache_dir.join("custom_icons");
+    let custom_file = custom_icons_dir.join(format!("{}.png", sanitize_filename(&cache_key)));
+    if custom_file.exists() {
+        if let Ok(data) = std::fs::read(&custom_file) {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            return Ok(Some(format!("data:image/png;base64,{}", b64)));
+        }
+    }
+
+    let cache = ICON_CACHE.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        if let Ok(content) = std::fs::read_to_string(&cache_path) {
+            if let Ok(existing) =
+                serde_json::from_str::<std::collections::HashMap<String, String>>(&content)
+            {
+                map = existing;
+            }
+        }
+        std::sync::Mutex::new(map)
+    });
+
+    // Strategy 1: Check persistent in-memory cache
+    if let Ok(c) = cache.lock() {
+        if let Some(icon) = c.get(&cache_key) {
+            return Ok(Some(icon.clone()));
+        }
+    }
+
+    // Bare executable names (default pins such as "notepad.exe") are resolved first,
+    // so a Store-package resolution can use the package logo instead of a System32 stub.
+    let mut path = path;
+    if !path.contains('\\') && !path.contains('/') {
+        if let Some(resolved) = resolve_executable_path(&path) {
+            path = resolved;
+        }
+    }
+
+    // Strategy 2: Shell-resolved app icons (Store/UWP/PWA packages) and executables
+    // inside an MSIX package. Neither has a usable icon on disk; the shell resolves
+    // the package logo through `shell:AppsFolder`.
+    let aumid_opt = if is_aumid_path(&path) {
+        Some(
+            path.trim()
+                .trim_start_matches("shell:AppsFolder\\")
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let packaged_exe = path.to_lowercase().contains("\\windowsapps\\");
+    if aumid_opt.is_some() || packaged_exe {
+        let path_owned = path.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let _ = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_MULTITHREADED,
+                )
+            };
+            let icon = match aumid_opt {
+                Some(aumid) => icon_from_aumid(&aumid),
+                None => packaged_exe_icon(&path_owned),
+            };
+            unsafe {
+                windows::Win32::System::Com::CoUninitialize();
+            }
+            icon
+        })
+        .await
+        .unwrap_or(None);
+
+        if let Some(base64) = result {
+            if let Ok(mut c) = cache.lock() {
+                c.insert(cache_key.clone(), base64.clone());
+            }
+            schedule_icon_cache_save(app);
+            return Ok(Some(base64));
+        }
+    }
+
+    // Strategy 3: Extract icon from live window HWND
+    if let Some(h) = hwnd {
+        let path_owned = path.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || unsafe {
+            use windows::Win32::System::Com::{
+                CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
+            };
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetClassLongPtrW, SendMessageTimeoutW, GCLP_HICON, ICON_BIG, SMTO_ABORTIFHUNG,
+                WM_GETICON,
+            };
+
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+            // Browser-hosted PWAs (Store apps, installed web apps) only expose the
+            // browser icon on the window itself; resolve the app identity from the
+            // window's AppUserModelID (or the process command line as fallback).
+            if is_browser_host_process(&path_owned) {
+                if let Some(icon) = pwa_icon_for_window(HWND(h as *mut _), &path_owned) {
+                    CoUninitialize();
+                    return Some(icon);
+                }
+            }
+
+            let h_hwnd = HWND(h as *mut _);
+
+            let mut h_icon = windows::Win32::UI::WindowsAndMessaging::HICON(GetClassLongPtrW(
+                h_hwnd, GCLP_HICON,
+            )
+                as *mut _);
+            if h_icon.is_invalid() {
+                h_icon = windows::Win32::UI::WindowsAndMessaging::HICON(GetClassLongPtrW(
+                    h_hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::GCL_HICON,
+                )
+                    as *mut _);
+            }
+
+            if h_icon.is_invalid() {
+                let mut res = 0usize;
+                let _ = SendMessageTimeoutW(
+                    h_hwnd,
+                    WM_GETICON,
+                    windows::Win32::Foundation::WPARAM(ICON_BIG as usize),
+                    windows::Win32::Foundation::LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    250,
+                    Some(&mut res),
+                );
+                if res != 0 {
+                    h_icon = windows::Win32::UI::WindowsAndMessaging::HICON(res as *mut _);
+                }
+            }
+
+            let res = if !h_icon.is_invalid() {
+                icon_to_base64(h_icon)
+            } else {
+                None
+            };
+
+            CoUninitialize();
+            res
+        })
+        .await
+        .unwrap_or(None);
+
+        if let Some(base64) = result {
+            if let Ok(mut c) = cache.lock() {
+                c.insert(cache_key.clone(), base64.clone());
+            }
+            schedule_icon_cache_save(app);
+            return Ok(Some(base64));
+        }
+    }
+
+    // Strategy 4: Extract icon from file path
+    let path_clone = path.clone();
+    let ck_clone = cache_key.clone();
+    let file_icon = tauri::async_runtime::spawn_blocking(move || unsafe {
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+        use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+        use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let result = {
+            let ((actual_path, args), is_lnk) = if path_clone.to_lowercase().ends_with(".lnk") {
+                (
+                    resolve_shortcut(&path_clone).unwrap_or((path_clone.clone(), String::new())),
+                    true,
+                )
+            } else {
+                ((path_clone.clone(), String::new()), false)
+            };
+
+            // A shortcut can carry its own icon file (Firefox web apps, user edits).
+            let mut icon_data = if is_lnk {
+                get_shortcut_icon_location(&path_clone).and_then(|p| image_file_to_base64(&p))
+            } else {
+                None
+            };
+
+            // Chrome/Edge/Brave installed web apps keep the site icon in the browser profile.
+            if icon_data.is_none() {
+                if let Some(pwa_icon_path) = find_browser_pwa_icon(&actual_path, &args) {
+                    icon_data = image_file_to_base64(&pwa_icon_path);
+                }
+            }
+
+            // UWP shortcuts launch `explorer.exe shell:AppsFolder\<AUMID>`.
+            if icon_data.is_none() {
+                if let Some(aumid) = extract_arg(&args, "shell:AppsFolder\\") {
+                    icon_data = icon_from_aumid(&aumid);
+                }
+            }
+
+            if icon_data.is_none() {
+                let mut shfi: SHFILEINFOW = std::mem::zeroed();
+                let path_u16: Vec<u16> = actual_path
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let res = SHGetFileInfoW(
+                    windows::core::PCWSTR(path_u16.as_ptr()),
+                    Default::default(),
+                    Some(&mut shfi),
+                    std::mem::size_of::<SHFILEINFOW>() as u32,
+                    SHGFI_ICON | SHGFI_LARGEICON,
+                );
+
+                if res != 0 && !shfi.hIcon.is_invalid() {
+                    icon_data = icon_to_base64(shfi.hIcon);
+                    let _ = DestroyIcon(shfi.hIcon);
+                }
+            }
+
+            if let Some(ref base64) = icon_data {
+                if let Ok(mut lock) = ICON_CACHE.get().unwrap().lock() {
+                    lock.insert(ck_clone, base64.clone());
+                }
+            }
+            icon_data
+        };
+        CoUninitialize();
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if file_icon.is_some() {
+        schedule_icon_cache_save(app);
+    }
+    Ok(file_icon)
+}
+
+#[tauri::command]
+pub fn save_pinned_apps(app: AppHandle, apps: Vec<AppInfo>) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("pinned_apps.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let content = serde_json::to_string(&apps).map_err(|e| e.to_string())?;
+    std::fs::write(path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn load_pinned_apps(app: AppHandle) -> Vec<AppInfo> {
+    let path = app
+        .path()
+        .app_config_dir()
+        .unwrap_or_default()
+        .join("pinned_apps.json");
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(apps) = serde_json::from_str(&content) {
+            return apps;
+        }
+    }
+    vec![
+        AppInfo {
+            name: "File Explorer".into(),
+            path: "C:\\Windows\\explorer.exe".into(),
+            icon: None,
+            is_running: false,
+            hwnd: None,
+            executable: Some("explorer.exe".into()),
+            all_hwnds: None,
+        },
+        AppInfo {
+            name: "Microsoft Edge".into(),
+            path: "msedge".into(),
+            icon: None,
+            is_running: false,
+            hwnd: None,
+            executable: Some("msedge.exe".into()),
+            all_hwnds: None,
+        },
+        AppInfo {
+            name: "Notepad".into(),
+            path: "notepad.exe".into(),
+            icon: None,
+            is_running: false,
+            hwnd: None,
+            executable: Some("notepad.exe".into()),
+            all_hwnds: None,
+        },
+        AppInfo {
+            name: "Settings".into(),
+            path: "bloom-settings".into(),
+            icon: None,
+            is_running: false,
+            hwnd: None,
+            executable: None,
+            all_hwnds: None,
+        },
+    ]
+}
+
+#[tauri::command]
+pub async fn clear_icon_cache(app: AppHandle) -> Result<(), String> {
+    let cache_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let cache_path = cache_dir.join("icons_cache.json");
+    let _ = std::fs::remove_file(&cache_path);
+    if let Some(c) = ICON_CACHE.get() {
+        if let Ok(mut lock) = c.lock() {
+            lock.clear();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_custom_icon(
+    app: AppHandle,
+    cache_key: String,
+    icon_data: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    use image::GenericImageView;
+
+    // Validate and decode the base64 data URI
+    let b64_str = if icon_data.starts_with("data:") {
+        icon_data.split(',').nth(1).ok_or("Invalid data URI")?
+    } else {
+        &icon_data
+    };
+
+    let raw_bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_str)
+        .map_err(|e| format!("Invalid base64: {}", e))?;
+
+    // Decode image to validate and get dimensions
+    let img = image::load_from_memory(&raw_bytes).map_err(|e| format!("Invalid image: {}", e))?;
+
+    let (w, h) = img.dimensions();
+    if w < 16 || h < 16 {
+        return Err("Icon must be at least 16x16 pixels".into());
+    }
+
+    // Resize to fit within 256x256 preserving aspect ratio, then center on transparent canvas
+    let target = 256u32;
+    let final_img = if w > target || h > target {
+        let scaled = img.resize(target, target, image::imageops::FilterType::Lanczos3);
+        let (sw, sh) = scaled.dimensions();
+        let mut canvas = image::RgbaImage::new(target, target);
+        let ox = (target - sw) / 2;
+        let oy = (target - sh) / 2;
+        image::imageops::overlay(&mut canvas, &scaled, ox as i64, oy as i64);
+        image::DynamicImage::ImageRgba8(canvas)
+    } else {
+        img
+    };
+
+    // Encode to PNG bytes
+    let mut png_bytes: Vec<u8> = Vec::new();
+    final_img
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+
+    // Save to custom_icons directory
+    let icons_dir = get_custom_icons_dir(&app)?;
+    let filename = format!("{}.png", sanitize_filename(&cache_key));
+    let file_path = icons_dir.join(&filename);
+    std::fs::write(&file_path, &png_bytes).map_err(|e| e.to_string())?;
+
+    // Update manifest mapping sanitized filename -> original cache key
+    let manifest_path = icons_dir.join("custom_icons.json");
+    let mut manifest: std::collections::HashMap<String, String> =
+        if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            std::collections::HashMap::new()
+        };
+    manifest.insert(sanitize_filename(&cache_key), cache_key);
+    let _ = std::fs::write(
+        &manifest_path,
+        serde_json::to_string(&manifest).unwrap_or_default(),
+    );
+
+    // Return the data URI for immediate use
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    Ok(format!("data:image/png;base64,{}", b64))
+}
+
+#[tauri::command]
+pub async fn remove_custom_icon(
+    app: AppHandle,
+    path: String,
+    name: Option<String>,
+) -> Result<(), String> {
+    let cache_key = get_cache_key(&path, name.as_deref());
+    let icons_dir = get_custom_icons_dir(&app)?;
+    let sanitized = sanitize_filename(&cache_key);
+    let filename = format!("{}.png", sanitized);
+    let file_path = icons_dir.join(&filename);
+    if file_path.exists() {
+        std::fs::remove_file(&file_path).map_err(|e| e.to_string())?;
+    }
+    // Remove from manifest
+    let manifest_path = icons_dir.join("custom_icons.json");
+    if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+        if let Ok(mut manifest) =
+            serde_json::from_str::<std::collections::HashMap<String, String>>(&content)
+        {
+            manifest.remove(&sanitized);
+            let _ = std::fs::write(
+                &manifest_path,
+                serde_json::to_string(&manifest).unwrap_or_default(),
+            );
+        }
+    }
+    // Also remove from persistent cache so the original icon is re-fetched
+    if let Some(c) = ICON_CACHE.get() {
+        if let Ok(mut lock) = c.lock() {
+            lock.remove(&cache_key);
+        }
+    }
+    schedule_icon_cache_save(app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_custom_icons(app: AppHandle) -> Result<HashMap<String, String>, String> {
+    let icons_dir = get_custom_icons_dir(&app)?;
+    let manifest_path = icons_dir.join("custom_icons.json");
+    let manifest: std::collections::HashMap<String, String> =
+        if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            std::collections::HashMap::new()
+        };
+    let mut result = HashMap::new();
+    if let Ok(entries) = std::fs::read_dir(&icons_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("png") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    // Use original cache key from manifest, fallback to sanitized stem
+                    let key = manifest
+                        .get(stem)
+                        .cloned()
+                        .unwrap_or_else(|| stem.to_string());
+                    if let Ok(data) = std::fs::read(&path) {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                        result.insert(key, format!("data:image/png;base64,{}", b64));
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_installed_apps() -> Vec<AppInfo> {
+    let cache = INSTALLED_APPS_CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+    let is_empty = if let Ok(lock) = cache.lock() {
+        lock.is_empty()
+    } else {
+        true
+    };
+    if !is_empty {
+        if let Ok(cache_lock) = cache.lock() {
+            return cache_lock.clone();
+        }
+    } else if !IS_SCANNING.load(Ordering::Relaxed) {
+        crate::services::trigger_app_scan();
+    }
+    let start = std::time::Instant::now();
+    while IS_SCANNING.load(Ordering::Relaxed) && start.elapsed() < std::time::Duration::from_secs(8)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+    if let Ok(cache_lock) = cache.lock() {
+        cache_lock.clone()
+    } else {
+        Vec::new()
+    }
+}
+
+#[tauri::command]
+pub fn hide_native_osd() {
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowA, ShowWindow, SW_HIDE};
+        let class1 = windows::core::PCSTR(c"NativeHWNDHost".as_ptr() as *const u8);
+        if let Ok(hwnd) = FindWindowA(class1, windows::core::PCSTR::null()) {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn open_settings_window(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        if let Ok(hwnd) = win.hwnd() {
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+                };
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+                let _ = SetForegroundWindow(hwnd);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn hide_overlay(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("overlay") {
+        let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+pub fn set_splash_fullscreen(app: AppHandle, fullscreen: bool) {
+    crate::state::OVERLAY_IN_SPLASH.store(fullscreen, Ordering::Relaxed);
+    if let Some(win) = app.get_webview_window("overlay") {
+        if fullscreen {
+            let _ = win.hide();
+            if let Ok(Some(monitor)) = win.primary_monitor() {
+                let size = monitor.size();
+                let pos = monitor.position();
+                let _ = win.set_position(tauri::PhysicalPosition::new(pos.x, pos.y));
+                let _ = win.set_size(tauri::PhysicalSize::new(size.width, size.height));
+            }
+            let _ = win.show();
+        } else {
+            let _ = win.hide();
+            crate::services::sync_overlays(&app);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn sync_overlay_position(app: AppHandle) {
+    crate::services::sync_overlays(&app);
+}
+
+#[tauri::command]
+pub fn open_wifi_settings() {
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            Some(HWND(std::ptr::null_mut())),
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-availablenetworks:".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_sound_settings() {
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            Some(HWND(std::ptr::null_mut())),
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:sound".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_notification_center() {
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            Some(HWND(std::ptr::null_mut())),
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-actioncenter:".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_system_tray() {
+    // The native taskbar is already available when the dock is disabled.
+    if !dock_enabled() {
+        return;
+    }
+    tauri::async_runtime::spawn_blocking(move || unsafe {
+        use std::sync::atomic::Ordering;
+        use windows::core::PCSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            FindWindowA, GetWindowLongA, IsWindowVisible, SetLayeredWindowAttributes,
+            SetWindowLongA, ShowWindow, GWL_EXSTYLE, LWA_ALPHA, SW_SHOW, WS_EX_LAYERED,
+            WS_EX_TRANSPARENT,
+        };
+
+        if !dock_enabled() {
+            return;
+        }
+
+        let tray_class = PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
+        let hwnd = FindWindowA(tray_class, windows::core::PCSTR::null()).unwrap_or_default();
+        if hwnd.0.is_null() {
+            return;
+        }
+
+        let currently_hidden = crate::state::NATIVE_TASKBAR_HIDDEN.load(Ordering::Relaxed);
+        if currently_hidden {
+            // 1. Make the taskbar completely invisible and click-through
+            let exstyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+            let _ = SetWindowLongA(
+                hwnd,
+                GWL_EXSTYLE,
+                exstyle | WS_EX_LAYERED.0 as i32 | WS_EX_TRANSPARENT.0 as i32,
+            );
+            let _ = SetLayeredWindowAttributes(
+                hwnd,
+                windows::Win32::Foundation::COLORREF(0),
+                0,
+                LWA_ALPHA,
+            );
+
+            // 2. Show the taskbar window WITHOUT calling ABM_SETSTATE (prevents work-area
+            //    recalculation which would displace the notch/dock appbars).
+            use crate::utils::ORIGINAL_TRAY_RECT;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            };
+            if let Ok(guard) = ORIGINAL_TRAY_RECT.lock() {
+                if let Some(rect) = *guard {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        rect.left,
+                        rect.top,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+            }
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            crate::state::NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+
+            // Give Windows a moment to realize the taskbar is "there"
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            // 3. Send the Win+B and Space macro to open the tray chevron
+            use windows::Win32::UI::Input::KeyboardAndMouse::{
+                SendInput, INPUT, INPUT_0, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LWIN,
+                VK_SPACE,
+            };
+            let b_key = VIRTUAL_KEY(0x42); // 'B' key
+
+            let inputs = [
+                // Win+B
+                INPUT {
+                    r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_LWIN,
+                            wScan: 0,
+                            dwFlags: Default::default(),
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+                INPUT {
+                    r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: b_key,
+                            wScan: 0,
+                            dwFlags: Default::default(),
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+                INPUT {
+                    r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: b_key,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+                INPUT {
+                    r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_LWIN,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+            ];
+            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+
+            std::thread::sleep(std::time::Duration::from_millis(150));
+
+            // Space to open the popup
+            let space_inputs = [
+                INPUT {
+                    r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_SPACE,
+                            wScan: 0,
+                            dwFlags: Default::default(),
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+                INPUT {
+                    r#type: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_SPACE,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                },
+            ];
+            SendInput(&space_inputs, std::mem::size_of::<INPUT>() as i32);
+
+            // 4. Start monitoring for the tray popup to close
+            std::thread::spawn(move || {
+                let overflow_class =
+                    PCSTR(c"TopLevelWindowForOverflowXamlIsland".as_ptr() as *const u8);
+                let win10_overflow_class = PCSTR(c"NotifyIconOverflowWindow".as_ptr() as *const u8);
+
+                // Wait for it to appear
+                let mut found = false;
+                for _ in 0..50 {
+                    let h1 = FindWindowA(overflow_class, PCSTR::null()).unwrap_or_default();
+                    let h2 = FindWindowA(win10_overflow_class, PCSTR::null()).unwrap_or_default();
+                    if (!h1.0.is_null() && IsWindowVisible(h1).as_bool())
+                        || (!h2.0.is_null() && IsWindowVisible(h2).as_bool())
+                    {
+                        found = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+
+                if found {
+                    // Wait for it to disappear
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        let h1 = FindWindowA(overflow_class, PCSTR::null()).unwrap_or_default();
+                        let h2 =
+                            FindWindowA(win10_overflow_class, PCSTR::null()).unwrap_or_default();
+                        let visible = (!h1.0.is_null() && IsWindowVisible(h1).as_bool())
+                            || (!h2.0.is_null() && IsWindowVisible(h2).as_bool());
+                        if !visible {
+                            break;
+                        }
+                    }
+                }
+
+                // Once closed, hide the taskbar only if the dock is still enabled.
+                if dock_enabled() {
+                    crate::utils::set_taskbar_visibility(false, false);
+                    crate::state::NATIVE_TASKBAR_HIDDEN.store(true, Ordering::Relaxed);
+                }
+
+                // Revert transparency
+                let tray_class = PCSTR(c"Shell_TrayWnd".as_ptr() as *const u8);
+                let hwnd = FindWindowA(tray_class, PCSTR::null()).unwrap_or_default();
+                if !hwnd.0.is_null() {
+                    let exstyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+                    let _ = SetLayeredWindowAttributes(
+                        hwnd,
+                        windows::Win32::Foundation::COLORREF(0),
+                        255,
+                        LWA_ALPHA,
+                    );
+                    let _ = SetWindowLongA(
+                        hwnd,
+                        GWL_EXSTYLE,
+                        exstyle & !(WS_EX_LAYERED.0 as i32) & !(WS_EX_TRANSPARENT.0 as i32),
+                    );
+                }
+            });
+        } else {
+            // If already toggled on manually, toggle off
+            crate::utils::set_taskbar_visibility(false, false);
+            crate::state::NATIVE_TASKBAR_HIDDEN.store(true, Ordering::Relaxed);
+
+            let exstyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+            let _ = SetLayeredWindowAttributes(
+                hwnd,
+                windows::Win32::Foundation::COLORREF(0),
+                255,
+                LWA_ALPHA,
+            );
+            let _ = SetWindowLongA(
+                hwnd,
+                GWL_EXSTYLE,
+                exstyle & !(WS_EX_LAYERED.0 as i32) & !(WS_EX_TRANSPARENT.0 as i32),
+            );
+        }
+    });
+}
+
+#[tauri::command]
+pub fn media_play_pause() {
+    if let Some(sender) = COMMAND_SENDER.get() {
+        let _ = sender.send(crate::types::SystemCommand::MediaPlayPause);
+    }
+}
+
+#[tauri::command]
+pub fn media_next() {
+    if let Some(sender) = COMMAND_SENDER.get() {
+        let _ = sender.send(crate::types::SystemCommand::MediaNext);
+    }
+}
+
+#[tauri::command]
+pub fn media_previous() {
+    if let Some(sender) = COMMAND_SENDER.get() {
+        let _ = sender.send(crate::types::SystemCommand::MediaPrevious);
+    }
+}
+
+#[tauri::command]
+pub fn media_seek(position_ms: f64) {
+    if let Some(sender) = COMMAND_SENDER.get() {
+        let _ = sender.send(crate::types::SystemCommand::MediaSeek(position_ms as i64));
+    }
+}
+
+#[tauri::command]
+pub fn open_media_source_app() {
+    unsafe {
+        use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
+        use windows::Win32::Foundation::{HWND, LPARAM};
+        use windows::Win32::System::Threading::OpenProcess;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, FindWindowW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+            SetForegroundWindow, ShowWindow, SW_RESTORE,
+        };
+
+        let mgr = match GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
+            .and_then(|op| op.get())
+        {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let session = match mgr.GetCurrentSession() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let app_id = match session.SourceAppUserModelId() {
+            Ok(id) => id.to_string(),
+            Err(_) => return,
+        };
+        if app_id.is_empty() {
+            return;
+        }
+
+        // First try: FindWindow with the AppUserModelId directly (works for UWP)
+        let h_app_id = windows::core::HSTRING::from(&app_id);
+        if let Ok(hwnd) = FindWindowW(None, windows::core::PCWSTR(h_app_id.as_ptr())) {
+            if !hwnd.is_invalid() {
+                if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                return;
+            }
+        }
+
+        // Second try: find window by process name extracted from app_id
+        let process_name = app_id.split('.').next().unwrap_or(&app_id).to_lowercase();
+
+        struct EnumData {
+            process_name: String,
+            found_hwnd: Option<HWND>,
+        }
+
+        unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+            let data = &mut *(lparam.0 as *mut EnumData);
+            if !IsWindowVisible(hwnd).as_bool() {
+                return windows::core::BOOL(1);
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 {
+                return windows::core::BOOL(1);
+            }
+
+            if let Ok(proc) = OpenProcess(
+                windows::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                pid,
+            ) {
+                let mut buf = [0u16; 260];
+                let mut size = buf.len() as u32;
+                let ok = windows::Win32::System::Threading::QueryFullProcessImageNameW(
+                    proc,
+                    windows::Win32::System::Threading::PROCESS_NAME_FORMAT(0),
+                    windows::core::PWSTR(buf.as_mut_ptr()),
+                    &mut size,
+                );
+                let _ = windows::Win32::Foundation::CloseHandle(proc);
+                if ok.is_ok() {
+                    let path = String::from_utf16_lossy(&buf[..size as usize]);
+                    let file_name = path
+                        .rsplit('\\')
+                        .next()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .replace(".exe", "");
+                    if file_name == data.process_name {
+                        data.found_hwnd = Some(hwnd);
+                        return windows::core::BOOL(0);
+                    }
+                }
+            }
+            windows::core::BOOL(1)
+        }
+
+        let mut data = EnumData {
+            process_name,
+            found_hwnd: None,
+        };
+        let callback: unsafe extern "system" fn(HWND, LPARAM) -> windows::core::BOOL =
+            enum_callback;
+        let _ = EnumWindows(Some(callback), LPARAM(&mut data as *mut EnumData as isize));
+
+        if let Some(hwnd) = data.found_hwnd {
+            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn set_volume(volume: f32) {
+    if let Some(sender) = COMMAND_SENDER.get() {
+        let _ = sender.send(crate::types::SystemCommand::SetVolume(volume));
+    }
+}
+
+/// Full path of a running process, or `None` when it can't be opened.
+pub(crate) unsafe fn process_image_path(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+    let mut buf = [0u16; 1024];
+    let mut size = buf.len() as u32;
+    let res = QueryFullProcessImageNameW(
+        handle,
+        PROCESS_NAME_WIN32,
+        windows::core::PWSTR(buf.as_mut_ptr()),
+        &mut size,
+    );
+    let _ = CloseHandle(handle);
+    res.ok()?;
+    Some(String::from_utf16_lossy(&buf[..size as usize]))
+}
+
+/// Friendly name for an executable: the shell's `FileDescription` from version
+/// info ("Google Chrome"), falling back to the prettified file stem. Results are
+/// cached by path because the mixer polls while it is open.
+pub(crate) unsafe fn friendly_process_name(path: &str) -> String {
+    let cache = PROCESS_NAME_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(name) = guard.get(path) {
+            return name.clone();
+        }
+    }
+    let name = friendly_process_name_uncached(path);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(path.to_string(), name.clone());
+    }
+    name
+}
+
+unsafe fn friendly_process_name_uncached(path: &str) -> String {
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let filename = windows::core::PCWSTR(wide.as_ptr());
+
+    'description: {
+        let size = GetFileVersionInfoSizeW(filename, None);
+        if size == 0 {
+            break 'description;
+        }
+        let mut data = vec![0u8; size as usize];
+        if GetFileVersionInfoW(filename, None, size, data.as_mut_ptr() as *mut _).is_err() {
+            break 'description;
+        }
+
+        // FileDescription lives under a language/codepage pair taken from the
+        // translation table; the first entry is what Explorer shows.
+        let mut trans_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut trans_len = 0u32;
+        if !VerQueryValueW(
+            data.as_ptr() as *const _,
+            windows::core::w!("\\VarFileInfo\\Translation"),
+            &mut trans_ptr,
+            &mut trans_len,
+        )
+        .as_bool()
+            || trans_len < 4
+            || trans_ptr.is_null()
+        {
+            break 'description;
+        }
+        // Translation entries are (LANGID, codepage) u16 pairs. Require a full
+        // four-byte pair, then read it byte-wise so the pointer can't be
+        // dereferenced short or with an alignment assumption.
+        let translation = std::slice::from_raw_parts(trans_ptr as *const u8, 4);
+        let lang = u16::from_le_bytes([translation[0], translation[1]]);
+        let codepage = u16::from_le_bytes([translation[2], translation[3]]);
+
+        let query = format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription");
+        let query_wide: Vec<u16> = query.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut value_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut value_len = 0u32;
+        if !VerQueryValueW(
+            data.as_ptr() as *const _,
+            windows::core::PCWSTR(query_wide.as_ptr()),
+            &mut value_ptr,
+            &mut value_len,
+        )
+        .as_bool()
+            || value_len == 0
+            || value_ptr.is_null()
+        {
+            break 'description;
+        }
+
+        let chars = std::slice::from_raw_parts(value_ptr as *const u16, value_len as usize);
+        let description = String::from_utf16_lossy(chars)
+            .trim_end_matches('\0')
+            .trim()
+            .to_string();
+        if !description.is_empty() {
+            return description;
+        }
+    }
+
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|stem| {
+            let mut chars = stem.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => stem.to_string(),
+            }
+        })
+        .unwrap_or_else(|| "Unknown app".to_string())
+}
+
+/// Calls `f` for every live audio session on every active render endpoint.
+/// Initializes COM on the calling thread and balances it before returning.
+unsafe fn for_each_audio_session<F: FnMut(&windows::Win32::Media::Audio::IAudioSessionControl2)>(
+    mut f: F,
+) -> Result<(), String> {
+    use windows::Win32::Media::Audio::{
+        eRender, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+        DEVICE_STATE_ACTIVE,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+
+    let com_initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+    let result = (|| -> Result<(), String> {
+        let enumerator: IMMDeviceEnumerator = CoCreateInstance(
+            &windows::Win32::Media::Audio::MMDeviceEnumerator,
+            None,
+            CLSCTX_ALL,
+        )
+        .map_err(|e| e.to_string())?;
+        // Windows' volume mixer lists sessions per output device, and per-app
+        // output routing (Windows 11) can put an app on a non-default device,
+        // so scan every active render endpoint instead of only the default one.
+        let devices = enumerator
+            .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+            .map_err(|e| e.to_string())?;
+        let device_count = devices.GetCount().map_err(|e| e.to_string())?;
+        for i in 0..device_count {
+            let Ok(device) = devices.Item(i) else {
+                continue;
+            };
+            let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
+                continue;
+            };
+            let Ok(sessions) = manager.GetSessionEnumerator() else {
+                continue;
+            };
+            let Ok(count) = sessions.GetCount() else {
+                continue;
+            };
+            for j in 0..count {
+                let Ok(control) = sessions.GetSession(j) else {
+                    continue;
+                };
+                let Ok(control) = control.cast::<IAudioSessionControl2>() else {
+                    continue;
+                };
+                f(&control);
+            }
+        }
+        Ok(())
+    })();
+    if com_initialized {
+        CoUninitialize();
+    }
+    result
+}
+
+/// Active windows with an audio session on the default output device,
+/// de-duplicated by process and sorted with currently-playing apps first.
+#[tauri::command]
+pub async fn get_audio_sessions() -> Result<Vec<AudioSessionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(|| unsafe {
+        use std::collections::HashSet;
+        use windows::Win32::Media::Audio::{
+            AudioSessionStateActive, AudioSessionStateExpired, ISimpleAudioVolume,
+        };
+
+        let own_pid = std::process::id();
+        let mut seen: HashSet<u32> = HashSet::new();
+        let mut found: Vec<(AudioSessionInfo, bool)> = Vec::new();
+
+        for_each_audio_session(|control| {
+            // Only S_OK marks the system-sounds session; S_FALSE is an ordinary app.
+            if control.IsSystemSoundsSession() == windows::Win32::Foundation::S_OK {
+                return;
+            }
+            let Ok(pid) = control.GetProcessId() else {
+                return;
+            };
+            if pid == 0 || pid == own_pid || !seen.insert(pid) {
+                return;
+            }
+            let state = control.GetState().unwrap_or_default();
+            if state == AudioSessionStateExpired {
+                seen.remove(&pid);
+                return;
+            }
+            let Ok(volume_ctl) = control.cast::<ISimpleAudioVolume>() else {
+                return;
+            };
+            let process_path = process_image_path(pid);
+            let name = match process_path.as_deref() {
+                Some(path) => friendly_process_name(path),
+                None => format!("Process {pid}"),
+            };
+            found.push((
+                AudioSessionInfo {
+                    pid,
+                    name,
+                    process_path,
+                    volume: volume_ctl.GetMasterVolume().unwrap_or(1.0),
+                    is_muted: volume_ctl.GetMute().map(|m| m.as_bool()).unwrap_or(false),
+                },
+                state == AudioSessionStateActive,
+            ));
+        })?;
+
+        found.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| a.0.name.to_lowercase().cmp(&b.0.name.to_lowercase()))
+        });
+        Ok(found.into_iter().map(|(info, _)| info).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_app_volume(pid: u32, volume: f32) -> Result<(), String> {
+    let volume = volume.clamp(0.0, 1.0);
+    tauri::async_runtime::spawn_blocking(move || unsafe {
+        use windows::Win32::Media::Audio::ISimpleAudioVolume;
+
+        for_each_audio_session(|control| {
+            if control.GetProcessId().ok() != Some(pid) {
+                return;
+            }
+            if let Ok(volume_ctl) = control.cast::<ISimpleAudioVolume>() {
+                let _ = volume_ctl.SetMasterVolume(volume, std::ptr::null());
+                if volume > 0.0 {
+                    let _ = volume_ctl.SetMute(false, std::ptr::null());
+                }
+            }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_app_mute(pid: u32, muted: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || unsafe {
+        use windows::Win32::Media::Audio::ISimpleAudioVolume;
+
+        for_each_audio_session(|control| {
+            if control.GetProcessId().ok() != Some(pid) {
+                return;
+            }
+            if let Ok(volume_ctl) = control.cast::<ISimpleAudioVolume>() {
+                let _ = volume_ctl.SetMute(muted, std::ptr::null());
+            }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Reports the on-screen bounds of the expanded mixer panel (overlay CSS px)
+/// so the mouse hook keeps forwarding cursor events while it is open.
+#[tauri::command]
+pub fn set_volume_mixer_rect(x: f64, y: f64, width: f64, height: f64) {
+    if let Ok(mut rect) = VOLUME_MIXER_RECT.lock() {
+        *rect = Some((x, y, width, height));
+    }
+}
+
+#[tauri::command]
+pub fn clear_volume_mixer_rect() {
+    if let Ok(mut rect) = VOLUME_MIXER_RECT.lock() {
+        *rect = None;
+    }
+}
+
+/// Unregisters the notch and dock AppBars so Windows gives their work area back.
+pub fn release_appbars(handle: &AppHandle) {
+    if let Some(w) = handle.get_webview_window("main") {
+        if MAIN_APPBAR_REGISTERED.load(Ordering::Relaxed) {
+            unregister_appbar_native(w.hwnd().unwrap());
+        }
+    }
+    if let Some(w) = handle.get_webview_window("dock") {
+        if DOCK_APPBAR_REGISTERED.load(Ordering::Relaxed) {
+            unregister_appbar_native(w.hwnd().unwrap());
+        }
+    }
+}
+
+/// Restore the native taskbar, unregister Bloom's appbars, and exit gracefully.
+/// Shared by the tray menu, the in-app Quit button, and the window CloseRequested
+/// handlers so that any shutdown path (including Task Manager's WM_CLOSE) behaves
+/// identically.
+pub fn restore_taskbar_and_exit(handle: &AppHandle) {
+    SHUTTING_DOWN.store(true, Ordering::Relaxed);
+    release_appbars(handle);
+    set_taskbar_visibility(true, true);
+    NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+    crate::services::set_native_osd_suppressed(false);
+    // Destroy all webview windows before exiting so Chromium's UnregisterClass for
+    // Chrome_WidgetWin_0 finds no open windows (avoids the harmless Error=1412 log).
+    for (_, w) in handle.webview_windows() {
+        let _ = w.destroy();
+    }
+    handle.exit(0);
+}
+
+#[tauri::command]
+pub async fn quit_bloom(handle: AppHandle) {
+    restore_taskbar_and_exit(&handle);
+}
+
+#[tauri::command]
+pub async fn restart_bloom(handle: AppHandle) {
+    SHUTTING_DOWN.store(true, Ordering::Relaxed);
+    if let Some(w) = handle.get_webview_window("main") {
+        unregister_appbar_native(w.hwnd().unwrap());
+    }
+    if let Some(w) = handle.get_webview_window("dock") {
+        unregister_appbar_native(w.hwnd().unwrap());
+    }
+    if let Some(w) = handle.get_webview_window("settings") {
+        let _ = w.destroy();
+    }
+    set_taskbar_visibility(true, true);
+    NATIVE_TASKBAR_HIDDEN.store(false, Ordering::Relaxed);
+    crate::services::set_native_osd_suppressed(false);
+    close_single_instance_handles();
+    handle.restart();
+}
+
+#[tauri::command]
+pub async fn close_window(hwnd: isize) {
+    tauri::async_runtime::spawn_blocking(move || unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+        let hwnd = HWND(hwnd as *mut _);
+        let _ = PostMessageW(
+            Some(hwnd),
+            WM_CLOSE,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+    })
+    .await
+    .unwrap_or_default();
+}
+
+fn re_register_appbars(app: &AppHandle, settings: &HashMap<String, serde_json::Value>) {
+    // Reconcile the notch from the live mode: a scale change alters the
+    // reserved strip height, and peek/smart must never hold a reservation.
+    crate::services::reconcile_main_appbar(app);
+    if let Some(main_win) = app.get_webview_window("main") {
+        if let Ok(Some(monitor)) = main_win.primary_monitor() {
+            let m_pos = monitor.position();
+            let m_size = monitor.size();
+            let scale = monitor.scale_factor();
+            let notch_scale = crate::utils::get_notch_scale(app);
+            let target_height = (520.0 * notch_scale * scale) as u32;
+            let _ = main_win.set_position(tauri::PhysicalPosition::new(m_pos.x, m_pos.y));
+            let _ = main_win.set_size(tauri::PhysicalSize::new(m_size.width, target_height));
+        }
+    }
+    if let Some(dock_win) = app.get_webview_window("dock") {
+        let is_fixed = settings
+            .get("bloom-dock-mode")
+            .map(|v| v.as_str() == Some("fixed"))
+            .unwrap_or(false);
+        if is_fixed {
+            crate::services::register_dock_appbar(dock_win);
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn save_setting(app: AppHandle, key: String, value: serde_json::Value) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("settings.json");
+
+    // Fast-path: update in-memory cache and broadcast immediately so webview never lags
+    let key_clone = key.clone();
+    let value_clone = value.clone();
+    let app_clone = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        static SAVE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = match SAVE_MUTEX.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut settings = HashMap::new();
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(existing) = serde_json::from_str::<HashMap<String, serde_json::Value>>(&content) {
+                settings = existing;
+            }
+        }
+        settings.insert(key_clone.clone(), value_clone.clone());
+        if let Ok(content) = serde_json::to_string(&settings) {
+            let _ = std::fs::write(&path, content);
+        }
+
+        crate::utils::replace_settings_cache(settings.clone());
+
+        let _ = app_clone.emit(
+            "settings-changed",
+            serde_json::json!({ "key": &key_clone, "value": &value_clone }),
+        );
+
+        if key_clone == "bloom-scale" || key_clone == "bloom-notch-scale" || key_clone == "bloom-dock-scale" {
+            re_register_appbars(&app_clone, &settings);
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn load_settings(app: AppHandle) -> Result<HashMap<String, serde_json::Value>, String> {
+    let path = match app.path().app_config_dir() {
+        Ok(p) => p.join("settings.json"),
+        Err(_) => return Ok(HashMap::new()),
+    };
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(settings) = serde_json::from_str(&content) {
+            return Ok(settings);
+        }
+    }
+    Ok(HashMap::new())
+}
+
+/// Whether settings.json exists and parses, which load_settings can't tell
+/// apart from a missing file since both load as an empty map.
+#[tauri::command]
+pub fn settings_file_readable(app: AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("settings.json")).ok())
+        .is_some_and(|content| {
+            serde_json::from_str::<HashMap<String, serde_json::Value>>(&content).is_ok()
+        })
+}
+
+#[tauri::command]
+pub async fn capture_window_thumbnail(
+    hwnd: isize,
+    max_width: u32,
+    max_height: u32,
+) -> Result<Option<(String, i64)>, String> {
+    tauri::async_runtime::spawn_blocking(move || unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow};
+
+        let hwnd = HWND(hwnd as *mut _);
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return None;
+        }
+
+        let hwnd_key = hwnd.0 as isize;
+        let is_minimized = IsIconic(hwnd).as_bool();
+
+        let mut focus_time = 0i64;
+        if let Some(map) = crate::state::FOCUS_TIMESTAMPS.get() {
+            if let Ok(guard) = map.lock() {
+                focus_time = guard.get(&hwnd_key).copied().unwrap_or(0);
+            }
+        }
+
+        if is_minimized {
+            // Never restore a minimized window to capture it: that briefly
+            // un-minimizes it on screen. Thumbnails are kept warm by the
+            // minimize/focus window hooks, so minimized windows normally have
+            // a cached image already; without one we simply show no preview.
+            let cached_img = if let Some(cache) = crate::state::THUMBNAIL_CACHE.get() {
+                cache
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.get(&hwnd_key).map(|(img, _)| img.clone()))
+            } else {
+                None
+            };
+            return cached_img.map(|img| (img, focus_time));
+        }
+
+        let result = crate::utils::capture_hwnd_to_base64(hwnd, max_width, max_height);
+
+        if let Some(ref img) = result {
+            if let Some(cache) = crate::state::THUMBNAIL_CACHE.get() {
+                if let Ok(mut guard) = cache.lock() {
+                    guard.insert(hwnd_key, (img.clone(), crate::utils::get_now_ms()));
+                    // Prune dead windows if cache size exceeds 15
+                    // Minimized windows (IsWindow == true) are kept intact
+                    if guard.len() > 15 {
+                        guard.retain(|&k, _| IsWindow(Some(HWND(k as *mut _))).as_bool());
+                        if guard.len() > 15 {
+                            let mut entries: Vec<(isize, i64)> = guard.iter().map(|(&k, (_, ts))| (k, *ts)).collect();
+                            entries.sort_by_key(|e| e.1);
+                            let to_remove = guard.len() - 15;
+                            for (old_k, _) in entries.into_iter().take(to_remove) {
+                                guard.remove(&old_k);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result.map(|img| (img, focus_time))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+// â”€â”€ Radio helpers â€” Windows Runtime Windows.Devices.Radios â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Replaces PowerShell -ExecutionPolicy Bypass scripts for WiFi/Bluetooth state.
+
+fn get_radio_state_sync(kind: windows::Devices::Radios::RadioKind) -> Result<bool, String> {
+    use windows::Devices::Radios::{Radio, RadioState};
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_MULTITHREADED,
+        );
+    }
+    let radios = Radio::GetRadiosAsync()
+        .and_then(|op| op.get())
+        .map_err(|e| e.to_string())?;
+    for i in 0..radios.Size().unwrap_or(0) {
+        if let Ok(radio) = radios.GetAt(i) {
+            if radio.Kind().ok() == Some(kind) {
+                return Ok(radio.State().ok() == Some(RadioState::On));
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn set_radio_state_sync(
+    kind: windows::Devices::Radios::RadioKind,
+    enabled: bool,
+) -> Result<(), String> {
+    use windows::Devices::Radios::{Radio, RadioState};
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_MULTITHREADED,
+        );
+    }
+    let radios = Radio::GetRadiosAsync()
+        .and_then(|op| op.get())
+        .map_err(|e| e.to_string())?;
+    for i in 0..radios.Size().unwrap_or(0) {
+        if let Ok(radio) = radios.GetAt(i) {
+            if radio.Kind().ok() == Some(kind) {
+                let target = if enabled {
+                    RadioState::On
+                } else {
+                    RadioState::Off
+                };
+                let _ = radio.SetStateAsync(target).and_then(|op| op.get());
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_volume() -> f32 {
+    crate::state::CURRENT_VOLUME.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// Live volume and mute state of the default render endpoint, also refreshing
+/// the cache `get_volume` reads. The system worker only emits `volume-change`
+/// when the value differs from its last poll, and its first poll happens before
+/// the overlay webview can register listeners, so HUDs must seed themselves
+/// with this instead of the cached default.
+#[tauri::command]
+pub async fn get_volume_state() -> Result<VolumeChangeEvent, String> {
+    tauri::async_runtime::spawn_blocking(|| unsafe {
+        use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+        use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator};
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+        };
+
+        let com_initialized = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| -> Result<VolumeChangeEvent, String> {
+            let enumerator: IMMDeviceEnumerator = CoCreateInstance(
+                &windows::Win32::Media::Audio::MMDeviceEnumerator,
+                None,
+                CLSCTX_ALL,
+            )
+            .map_err(|e| e.to_string())?;
+            let device = enumerator
+                .GetDefaultAudioEndpoint(eRender, eConsole)
+                .map_err(|e| e.to_string())?;
+            let endpoint: IAudioEndpointVolume = device
+                .Activate(CLSCTX_ALL, None)
+                .map_err(|e| e.to_string())?;
+            let volume = endpoint
+                .GetMasterVolumeLevelScalar()
+                .map_err(|e| e.to_string())?;
+            let is_muted = endpoint.GetMute().map(|m| m.as_bool()).unwrap_or(false);
+            CURRENT_VOLUME.store((volume * 100.0) as u32, Ordering::Relaxed);
+            Ok(VolumeChangeEvent { volume, is_muted })
+        })();
+        if com_initialized {
+            CoUninitialize();
+        }
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn get_brightness() -> u32 {
+    crate::state::CURRENT_BRIGHTNESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+// â”€â”€ Wi-Fi status â€” WLAN API for association state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// The radio state only says Wi-Fi is on, not whether it is connected, so the
+// notch quick settings needs a second bit to distinguish "on" from "connected".
+
+pub fn get_wlan_connection_info_sync() -> (bool, String) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::NetworkManagement::WiFi::{
+        wlan_intf_opcode_current_connection, WlanCloseHandle, WlanEnumInterfaces, WlanFreeMemory,
+        WlanOpenHandle, WlanQueryInterface, WLAN_CONNECTION_ATTRIBUTES, WLAN_INTERFACE_INFO_LIST,
+    };
+
+    unsafe {
+        let mut negotiated_version = 0u32;
+        let mut client_handle = HANDLE::default();
+        if WlanOpenHandle(2, None, &mut negotiated_version, &mut client_handle) != 0 {
+            return (false, String::new());
+        }
+
+        let mut interface_list: *mut WLAN_INTERFACE_INFO_LIST = std::ptr::null_mut();
+        let mut connected = false;
+        let mut ssid = String::new();
+        if WlanEnumInterfaces(client_handle, None, &mut interface_list) != 0 {
+            WlanCloseHandle(client_handle, None);
+            return (false, String::new());
+        }
+        if let Some(list) = interface_list.as_ref() {
+            let count = list.dwNumberOfItems as usize;
+            if count > 0 && count <= 64 {
+                let interfaces = std::slice::from_raw_parts(list.InterfaceInfo.as_ptr(), count);
+                for interface in interfaces {
+                    let mut data_size = 0u32;
+                    let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
+                    let result = WlanQueryInterface(
+                        client_handle,
+                        &interface.InterfaceGuid,
+                        wlan_intf_opcode_current_connection,
+                        None,
+                        &mut data_size,
+                        &mut data,
+                        None,
+                    );
+                    if result == 0 && !data.is_null() {
+                        connected = true;
+                        let attr = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
+                        let ssid_len = attr.wlanAssociationAttributes.dot11Ssid.uSSIDLength as usize;
+                        if ssid_len > 0 {
+                            let len = ssid_len.min(32);
+                            let bytes = &attr.wlanAssociationAttributes.dot11Ssid.ucSSID[..len];
+                            ssid = String::from_utf8_lossy(bytes).trim().to_string();
+                        }
+                    }
+                    if !data.is_null() {
+                        WlanFreeMemory(data);
+                    }
+                    if connected {
+                        break;
+                    }
+                }
+            }
+            WlanFreeMemory(interface_list as *const _);
+        }
+
+        WlanCloseHandle(client_handle, None);
+        (connected, ssid)
+    }
+}
+
+pub fn get_wlan_status_fast() -> (bool, bool, String) {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::NetworkManagement::WiFi::{
+        wlan_intf_opcode_current_connection, wlan_interface_state_not_ready, WlanCloseHandle,
+        WlanEnumInterfaces, WlanFreeMemory, WlanOpenHandle, WlanQueryInterface,
+        WLAN_CONNECTION_ATTRIBUTES, WLAN_INTERFACE_INFO_LIST,
+    };
+
+    unsafe {
+        let mut negotiated_version = 0u32;
+        let mut client_handle = HANDLE::default();
+        if WlanOpenHandle(2, None, &mut negotiated_version, &mut client_handle) != 0 {
+            return (false, false, String::new());
+        }
+
+        let mut interface_list: *mut WLAN_INTERFACE_INFO_LIST = std::ptr::null_mut();
+        let mut enabled = false;
+        let mut connected = false;
+        let mut ssid = String::new();
+        if WlanEnumInterfaces(client_handle, None, &mut interface_list) != 0 {
+            WlanCloseHandle(client_handle, None);
+            return (false, false, String::new());
+        }
+        if let Some(list) = interface_list.as_ref() {
+            let count = list.dwNumberOfItems as usize;
+            if count > 0 && count <= 64 {
+                let interfaces = std::slice::from_raw_parts(list.InterfaceInfo.as_ptr(), count);
+                for interface in interfaces {
+                    if interface.isState != wlan_interface_state_not_ready {
+                        enabled = true;
+                    }
+                    let mut data_size = 0u32;
+                    let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
+                    let result = WlanQueryInterface(
+                        client_handle,
+                        &interface.InterfaceGuid,
+                        wlan_intf_opcode_current_connection,
+                        None,
+                        &mut data_size,
+                        &mut data,
+                        None,
+                    );
+                    if result == 0 && !data.is_null() {
+                        connected = true;
+                        let attr = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
+                        let ssid_len = attr.wlanAssociationAttributes.dot11Ssid.uSSIDLength as usize;
+                        if ssid_len > 0 {
+                            let len = ssid_len.min(32);
+                            let bytes = &attr.wlanAssociationAttributes.dot11Ssid.ucSSID[..len];
+                            ssid = String::from_utf8_lossy(bytes).trim().to_string();
+                        }
+                    }
+                    if !data.is_null() {
+                        WlanFreeMemory(data);
+                    }
+                    if connected {
+                        break;
+                    }
+                }
+            }
+            WlanFreeMemory(interface_list as *const _);
+        }
+
+        WlanCloseHandle(client_handle, None);
+        (enabled, connected, ssid)
+    }
+}
+
+fn is_wlan_connected_sync() -> bool {
+    get_wlan_connection_info_sync().0
+}
+
+fn is_ethernet_connected_sync() -> bool {
+    use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
+
+    unsafe {
+        let mut table_ptr: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
+        let ret = GetIfTable2(&mut table_ptr);
+        if ret.is_ok() && !table_ptr.is_null() {
+            let table = &*table_ptr;
+            let num_entries = table.NumEntries as usize;
+            let rows = table.Table.as_ptr();
+            let mut connected = false;
+            for i in 0..num_entries {
+                let row = &*rows.add(i);
+                // Type 6 = IF_TYPE_ETHERNET_CSMACD
+                // OperStatus: IfOperStatusUp = 1
+                // MediaConnectState: MediaConnectStateConnected = 1
+                if row.Type == 6 && row.OperStatus.0 == 1 && row.MediaConnectState.0 == 1 {
+                    connected = true;
+                    break;
+                }
+            }
+            FreeMibTable(table_ptr as *const _);
+            return connected;
+        }
+        false
+    }
+}
+
+/// Wi-Fi and Ethernet network association state for notch quick settings.
+#[tauri::command]
+pub async fn get_wifi_status() -> Result<WifiStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| -> Result<WifiStatus, String> {
+        let enabled = get_radio_state_sync(windows::Devices::Radios::RadioKind::WiFi)?;
+        let connected = enabled && is_wlan_connected_sync();
+        let ethernet_connected = is_ethernet_connected_sync();
+        Ok(WifiStatus {
+            enabled,
+            connected,
+            ethernet_connected,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_wifi_state(enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        set_radio_state_sync(windows::Devices::Radios::RadioKind::WiFi, enabled)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_bluetooth_state() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        get_radio_state_sync(windows::Devices::Radios::RadioKind::Bluetooth)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn set_bluetooth_state(enabled: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        set_radio_state_sync(windows::Devices::Radios::RadioKind::Bluetooth, enabled)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// Settings openers â€” use ShellExecuteA directly instead of spawning powershell
+
+#[tauri::command]
+pub fn open_bluetooth_settings() {
+    unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            None,
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:bluetooth".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_airplane_mode_settings() {
+    unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            None,
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:network-airplanemode".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_mobile_hotspot_settings() {
+    unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            None,
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:network-mobilehotspot".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_network_settings() {
+    unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            None,
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:network".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_ethernet_settings() {
+    unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            None,
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:network-ethernet".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn open_night_light_settings() {
+    unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            None,
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:nightlight".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+#[tauri::command]
+pub fn set_brightness(app: AppHandle, brightness: u32) {
+    let val = brightness.min(100);
+    crate::state::CURRENT_BRIGHTNESS.store(val, Ordering::Relaxed);
+    crate::state::LAST_BRIGHTNESS_CHANGE.store(crate::utils::get_now_ms(), Ordering::Relaxed);
+    let _ = app.emit(
+        "brightness-change",
+        BrightnessChangeEvent { brightness: val },
+    );
+    if let Some(tx) = crate::state::BRIGHTNESS_SENDER.get() {
+        let _ = tx.send(val);
+    }
+}
+
+#[tauri::command]
+pub async fn get_battery_saver_state() -> Result<bool, String> {
+    // Uses Windows Runtime PowerManager â€” no PowerShell required.
+    tauri::async_runtime::spawn_blocking(|| {
+        unsafe {
+            let _ = windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            );
+        }
+        use windows::System::Power::{EnergySaverStatus, PowerManager};
+        match PowerManager::EnergySaverStatus() {
+            Ok(status) => Ok(status == EnergySaverStatus::On),
+            Err(_) => Ok(false), // No battery / not supported on this device
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn open_battery_saver_settings() {
+    unsafe {
+        use windows::Win32::UI::Shell::ShellExecuteA;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let _ = ShellExecuteA(
+            None,
+            windows::core::PCSTR(c"open".as_ptr() as *const u8),
+            windows::core::PCSTR(c"ms-settings:batterysaver".as_ptr() as *const u8),
+            windows::core::PCSTR::null(),
+            windows::core::PCSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+static AIRPLANE_MODE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+const CLSID_RADIO_MANAGEMENT_API: windows::core::GUID =
+    windows::core::GUID::from_u128(0x581333f6_28db_41be_bc7a_ff201f12f3f6);
+const IID_IRADIO_MANAGER: windows::core::GUID =
+    windows::core::GUID::from_u128(0xdb3afbfb_08e6_46c6_aa70_bf9a34c30ab7);
+
+fn get_system_radio_state_com() -> Option<bool> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let unknown: windows::core::IUnknown =
+            CoCreateInstance(&CLSID_RADIO_MANAGEMENT_API, None, CLSCTX_ALL).ok()?;
+        let mut radio_manager_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hr = (unknown.vtable().QueryInterface)(
+            windows::core::Interface::as_raw(&unknown),
+            &IID_IRADIO_MANAGER,
+            &mut radio_manager_ptr,
+        );
+        if hr.is_err() || radio_manager_ptr.is_null() {
+            return None;
+        }
+
+        let vtable_ptr = *(radio_manager_ptr as *mut *mut usize);
+        type GetSystemRadioStateFn = unsafe extern "system" fn(
+            *mut std::ffi::c_void,
+            *mut i32,
+            *mut i32,
+            *mut u32,
+        ) -> windows::core::HRESULT;
+        type ReleaseFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
+
+        let get_state: GetSystemRadioStateFn = std::mem::transmute(*vtable_ptr.add(5));
+        let release: ReleaseFn = std::mem::transmute(*vtable_ptr.add(2));
+
+        let mut enabled: i32 = 0;
+        let mut unk1: i32 = 0;
+        let mut reason: u32 = 0;
+        let hr_call = get_state(radio_manager_ptr, &mut enabled, &mut unk1, &mut reason);
+        release(radio_manager_ptr);
+
+        if hr_call.is_ok() {
+            // enabled == 0: all radios off -> Airplane Mode is ON
+            // enabled == 1: radios on -> Airplane Mode is OFF
+            return Some(enabled == 0);
+        }
+    }
+    None
+}
+
+fn set_system_radio_state_com(airplane_mode: bool) -> Result<(), String> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let unknown: windows::core::IUnknown =
+            CoCreateInstance(&CLSID_RADIO_MANAGEMENT_API, None, CLSCTX_ALL)
+                .map_err(|e| format!("CoCreateInstance failed: {:?}", e))?;
+        let mut radio_manager_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hr = (unknown.vtable().QueryInterface)(
+            windows::core::Interface::as_raw(&unknown),
+            &IID_IRADIO_MANAGER,
+            &mut radio_manager_ptr,
+        );
+        if hr.is_err() || radio_manager_ptr.is_null() {
+            return Err("QueryInterface for IRadioManager failed".to_string());
+        }
+
+        let vtable_ptr = *(radio_manager_ptr as *mut *mut usize);
+        type SetSystemRadioStateFn =
+            unsafe extern "system" fn(*mut std::ffi::c_void, i32) -> windows::core::HRESULT;
         type ReleaseFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
 
         let set_state: SetSystemRadioStateFn = std::mem::transmute(*vtable_ptr.add(6));
