@@ -1,0 +1,401 @@
+/* Orbix Apps Panel */
+.apps-panel-content {
+	position: absolute;
+	top: 36px;
+	left: 0;
+	width: 100%;
+	height: calc(100% - 36px);
+	box-sizing: border-box;
+	z-index: 2;
+	padding: 4px 12px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	color: var(--bloom-text, white);
+	border-radius: 0 0 18px 18px;
+	overflow: hidden;
+	user-select: none;
+}
+
+/* Toast */
+.apps-toast {
+	position: absolute;
+	top: 8px;
+	right: 14px;
+	z-index: 20;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	background: #30d158;
+	color: #000000;
+	font-size: 10.5px;
+	font-weight: 600;
+	padding: 3px 9px;
+	border-radius: 12px;
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+	pointer-events: none;
+}
+
+/* Search Header */
+.apps-search-header {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	width: 100%;
+	flex-shrink: 0;
+	padding-top: 2px;
+}
+
+.apps-search-input-wrapper {
+	position: relative;
+	display: flex;
+	align-items: center;
+	width: 100%;
+	height: 34px;
+	background: rgba(255, 255, 255, 0.05);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	border-radius: 10px;
+	padding: 0 10px;
+	box-sizing: border-box;
+	transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.apps-search-input-wrapper:focus-within {
+	border-color: rgba(255, 255, 255, 0.22);
+	background: rgba(255, 255, 255, 0.08);
+}
+
+.apps-search-icon {
+	color: rgba(255, 255, 255, 0.45);
+	margin-right: 8px;
+	flex-shrink: 0;
+}
+
+.apps-search-input {
+	flex: 1;
+	background: transparent;
+	border: none;
+	outline: none;
+	color: #ffffff;
+	font-size: 12px;
+	font-weight: 500;
+	letter-spacing: -0.1px;
+}
+
+.apps-search-input::placeholder {
+	color: rgba(255, 255, 255, 0.38);
+	font-weight: 400;
+}
+
+.apps-search-right-group {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.apps-search-clear-btn {
+	background: transparent;
+	border: none;
+	color: rgba(255, 255, 255, 0.45);
+	cursor: pointer;
+	padding: 2px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	transition: color 0.12s ease;
+}
+
+.apps-search-clear-btn:hover {
+	color: #ffffff;
+}
+
+.apps-search-shortcut-badge {
+	font-size: 10px;
+	font-weight: 500;
+	color: rgba(255, 255, 255, 0.45);
+	background: rgba(255, 255, 255, 0.06);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	padding: 1.5px 6px;
+	border-radius: 4px;
+	white-space: nowrap;
+}
+
+/* Category Filter Pills (All | Apps | Files | Snippets) */
+.apps-category-pills {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 1px 2px 2px;
+}
+
+.apps-filter-pill {
+	background: rgba(255, 255, 255, 0.04);
+	border: 1px solid rgba(255, 255, 255, 0.07);
+	color: rgba(255, 255, 255, 0.5);
+	font-size: 9.5px;
+	font-weight: 600;
+	padding: 2.5px 8px;
+	border-radius: 12px;
+	cursor: pointer;
+	transition: all 0.12s ease;
+}
+
+.apps-filter-pill:hover {
+	color: #ffffff;
+	background: rgba(255, 255, 255, 0.08);
+}
+
+.apps-filter-pill.active {
+	background: rgba(255, 255, 255, 0.14);
+	color: #ffffff;
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* Categorized Results List */
+.apps-results-list {
+	flex: 1;
+	width: 100%;
+	overflow-y: auto;
+	overflow-x: hidden;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+	padding-right: 2px;
+	padding-bottom: 10px;
+	margin-top: 2px;
+	contain: content;
+	transform: translateZ(0);
+}
+
+.apps-results-list::-webkit-scrollbar {
+	width: 4px;
+}
+
+.apps-results-list::-webkit-scrollbar-thumb {
+	background: rgba(255, 255, 255, 0.12);
+	border-radius: 4px;
+}
+
+/* Section Header */
+.apps-section {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	margin-bottom: 4px;
+}
+
+.apps-section-header {
+	font-size: 9.5px;
+	font-weight: 700;
+	letter-spacing: 0.9px;
+	text-transform: uppercase;
+	color: rgba(255, 255, 255, 0.38);
+	padding: 6px 8px 3px;
+	user-select: none;
+}
+
+.apps-section-items {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	width: 100%;
+}
+
+/* Result Row Item */
+.apps-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 5px 8px;
+	border-radius: 8px;
+	background: transparent;
+	cursor: pointer;
+	transition: background 0.1s ease, box-shadow 0.1s ease;
+}
+
+.apps-item:hover {
+	background: rgba(255, 255, 255, 0.08);
+}
+
+.apps-item.is-selected {
+	background: rgba(255, 255, 255, 0.1);
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+/* Icon Box */
+.apps-item-icon-box {
+	width: 24px;
+	height: 24px;
+	border-radius: 6px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(255, 255, 255, 0.05);
+	color: rgba(255, 255, 255, 0.85);
+	flex-shrink: 0;
+	overflow: hidden;
+}
+
+.apps-item-icon-box.app-img img {
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+}
+
+.apps-item-icon-box.game {
+	color: #fb7185;
+	background: rgba(251, 113, 133, 0.12);
+}
+
+.apps-item-icon-box.folder {
+	color: #fbbf24;
+	background: rgba(251, 191, 36, 0.12);
+}
+
+.apps-item-icon-box.file {
+	color: #38bdf8;
+	background: rgba(56, 189, 248, 0.12);
+}
+
+.apps-item-icon-box.terminal {
+	color: #34d399;
+	background: rgba(52, 211, 153, 0.12);
+}
+
+.apps-item-icon-box.calc {
+	color: #ec4899;
+	background: rgba(236, 72, 153, 0.12);
+}
+
+.apps-item-icon-box.clock,
+.apps-item-icon-box.calendar {
+	color: #a3e635;
+	background: rgba(163, 230, 53, 0.12);
+}
+
+.apps-item-icon-box.sparkles {
+	color: #c084fc;
+	background: rgba(192, 132, 252, 0.12);
+}
+
+/* Item Titles */
+.apps-item-info {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	flex: 1;
+}
+
+.apps-item-title {
+	font-size: 12px;
+	font-weight: 500;
+	color: #ffffff;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	letter-spacing: -0.1px;
+}
+
+.apps-match-highlight {
+	color: #60a5fa;
+	font-weight: 700;
+	text-decoration: underline;
+	text-decoration-color: rgba(96, 165, 250, 0.4);
+	text-underline-offset: 2px;
+}
+
+.apps-item.is-selected .apps-match-highlight {
+	color: #93c5fd;
+	text-decoration-color: rgba(147, 197, 253, 0.6);
+}
+
+.apps-item-subtitle {
+	font-size: 10px;
+	color: rgba(255, 255, 255, 0.38);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Right-aligned tag for unselected item */
+.apps-item-tag {
+	font-size: 11px;
+	font-weight: 400;
+	color: rgba(255, 255, 255, 0.35);
+	margin-left: auto;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+/* Right-aligned actions for selected item */
+.apps-item-selected-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+	flex-shrink: 0;
+}
+
+.apps-open-badge {
+	font-size: 10px;
+	font-weight: 500;
+	color: rgba(255, 255, 255, 0.9);
+	background: rgba(255, 255, 255, 0.12);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	padding: 2px 7px;
+	border-radius: 4px;
+	white-space: nowrap;
+}
+
+.apps-star-btn {
+	background: transparent;
+	border: none;
+	color: rgba(255, 255, 255, 0.45);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 2px;
+	border-radius: 4px;
+	transition: color 0.12s ease, transform 0.1s ease;
+}
+
+.apps-star-btn:hover {
+	color: #ffd60a;
+	transform: scale(1.15);
+}
+
+.apps-star-btn.pinned {
+	color: #ffd60a;
+}
+
+/* Empty State */
+.apps-empty-state {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 36px 16px;
+	text-align: center;
+	gap: 6px;
+}
+
+.empty-search-icon {
+	color: rgba(255, 255, 255, 0.2);
+	margin-bottom: 2px;
+}
+
+.empty-title {
+	font-size: 12.5px;
+	font-weight: 500;
+	color: rgba(255, 255, 255, 0.7);
+}
+
+.empty-hint {
+	font-size: 10.5px;
+	color: rgba(255, 255, 255, 0.35);
+}
+

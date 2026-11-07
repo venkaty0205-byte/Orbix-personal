@@ -1,0 +1,157 @@
+/* Power Panel */
+.power-panel-content {
+	position: absolute;
+	top: 36px;
+	left: 0;
+	width: 100%;
+	height: calc(100% - 36px);
+	box-sizing: border-box;
+	z-index: 2;
+	padding: 6px 14px 10px;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	color: var(--bloom-text, white);
+	border-radius: 0 0 18px 18px;
+	overflow: hidden;
+	user-select: none;
+}
+
+.power-feedback-badge {
+	position: absolute;
+	top: 4px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 5;
+	pointer-events: none;
+}
+
+.power-status-hint {
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.02em;
+	color: var(--bloom-text-muted, rgba(255, 255, 255, 0.75));
+	text-align: center;
+	white-space: nowrap;
+	background: rgba(0, 0, 0, 0.5);
+	padding: 2px 8px;
+	border-radius: 10px;
+	backdrop-filter: blur(4px);
+}
+
+.power-status-hint.is-holding {
+	color: var(--bloom-text, #ffffff);
+	font-weight: 600;
+}
+
+.power-status-hint.is-triggered {
+	color: #30d158;
+	font-weight: 600;
+}
+
+.power-actions-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-evenly;
+	width: 100%;
+	padding: 0 4px;
+	gap: 6px;
+}
+
+.power-action-item {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 5px;
+	cursor: pointer;
+	flex: 1;
+	min-width: 0;
+	outline: none;
+	background: transparent;
+	border: none;
+	padding: 0;
+	touch-action: none;
+}
+
+.power-btn-ring-wrapper {
+	position: relative;
+	width: 46px;
+	height: 46px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.power-ring-svg {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 46px;
+	height: 46px;
+	transform: rotate(-90deg);
+	pointer-events: none;
+}
+
+.power-ring-track {
+	fill: none;
+	stroke: var(--bloom-group-bg, rgba(255, 255, 255, 0.08));
+	stroke-width: 2.5;
+}
+
+.power-ring-progress {
+	fill: none;
+	stroke-width: 2.5;
+	stroke-linecap: round;
+}
+
+.power-btn-circle {
+	width: 36px;
+	height: 36px;
+	border-radius: 50%;
+	background: var(--bloom-group-bg, rgba(255, 255, 255, 0.06));
+	border: 1px solid var(--bloom-border, rgba(255, 255, 255, 0.08));
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--bloom-text, rgba(255, 255, 255, 0.85));
+	transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+	outline: none;
+}
+
+.power-action-item:hover .power-btn-circle {
+	background: var(--bloom-border, rgba(255, 255, 255, 0.14));
+	color: var(--bloom-text, #ffffff);
+	transform: translateY(-1px);
+}
+
+.power-action-item.holding .power-btn-circle {
+	transform: scale(0.92);
+	background: rgba(255, 255, 255, 0.18);
+}
+
+.power-action-item.triggered .power-btn-circle {
+	transform: scale(1.06);
+	background: rgba(48, 209, 88, 0.25);
+	border-color: #30d158;
+	color: #30d158;
+}
+
+.power-action-label {
+	font-size: 9.5px;
+	font-weight: 500;
+	color: var(--bloom-text-muted, rgba(255, 255, 255, 0.5));
+	letter-spacing: 0.01em;
+	transition: color 0.12s ease;
+	white-space: nowrap;
+}
+
+.power-action-item:hover .power-action-label {
+	color: var(--bloom-text, rgba(255, 255, 255, 0.9));
+}
+
+.power-action-item.holding .power-action-label {
+	color: var(--bloom-text, #ffffff);
+	font-weight: 600;
+}
+

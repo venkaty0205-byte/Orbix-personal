@@ -1,0 +1,324 @@
+/* Wallpaper Big Slanted Carousel Panel */
+.wallpaper-panel-content {
+	position: absolute;
+	top: 36px;
+	left: 0;
+	width: 100%;
+	height: calc(100% - 36px);
+	box-sizing: border-box;
+	z-index: 2;
+	padding: 6px 14px 14px;
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	color: var(--bloom-text, white);
+	border-radius: 0 0 20px 20px;
+	overflow: hidden;
+	user-select: none;
+}
+
+/* Header matching Reference Image */
+.wallpaper-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	width: 100%;
+	height: 32px;
+	padding: 0 4px;
+	margin-bottom: 6px;
+	flex-shrink: 0;
+}
+
+.wallpaper-header-left {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+/* Light Mint Green Pill Button */
+.wallpaper-folder-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 14px;
+	border-radius: 999px;
+	background: #75f08d;
+	border: 1px solid rgba(255, 255, 255, 0.4);
+	color: #0b3419;
+	font-size: 11.5px;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	cursor: pointer;
+	transition: all 0.18s ease;
+	outline: none;
+	box-shadow: 0 2px 8px rgba(117, 240, 141, 0.28);
+}
+
+.wallpaper-folder-pill:hover {
+	background: #8effa3;
+	transform: translateY(-1px);
+	box-shadow: 0 4px 12px rgba(117, 240, 141, 0.4);
+}
+
+.wallpaper-folder-pill:active {
+	transform: translateY(0);
+}
+
+.wallpaper-folder-name {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: rgba(255, 255, 255, 0.9);
+	max-width: 220px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wallpaper-count-text {
+	font-size: 12px;
+	font-weight: 500;
+	color: rgba(255, 255, 255, 0.48);
+	letter-spacing: 0.01em;
+}
+
+.wallpaper-header-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.wallpaper-refresh-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.06);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	color: rgba(255, 255, 255, 0.65);
+	cursor: pointer;
+	transition: all 0.18s ease;
+	outline: none;
+}
+
+.wallpaper-refresh-btn:hover {
+	background: rgba(255, 255, 255, 0.16);
+	color: #ffffff;
+	transform: translateY(-0.5px);
+}
+
+.wallpaper-close-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.06);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	color: rgba(255, 255, 255, 0.65);
+	cursor: pointer;
+	transition: all 0.18s ease;
+	outline: none;
+}
+
+.wallpaper-close-btn:hover {
+	background: rgba(255, 59, 48, 0.2);
+	border-color: rgba(255, 59, 48, 0.4);
+	color: #ff453a;
+	transform: translateY(-0.5px);
+}
+
+/* Empty State */
+.wallpaper-empty-state {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	color: rgba(255, 255, 255, 0.45);
+	font-size: 12.5px;
+}
+
+.wallpaper-empty-btn {
+	margin-top: 6px;
+	padding: 6px 14px;
+	border-radius: 9px;
+	background: rgba(255, 255, 255, 0.09);
+	border: 1px solid rgba(255, 255, 255, 0.18);
+	color: #ffffff;
+	font-size: 11.5px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.18s ease;
+}
+
+.wallpaper-empty-btn:hover {
+	background: rgba(255, 255, 255, 0.2);
+}
+
+/* Carousel Track with Symmetrical Center-Padding */
+.wallpaper-carousel-track {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	/* Padding allows the 420px hero card to center symmetrically */
+	padding-left: calc(50% - 210px);
+	padding-right: calc(50% - 210px);
+	padding-top: 6px;
+	padding-bottom: 6px;
+	contain: content;
+	scroll-behavior: smooth;
+}
+
+.wallpaper-carousel-track::-webkit-scrollbar {
+	display: none;
+}
+
+/* Slanted Parallelogram Cards */
+.wallpaper-slanted-card {
+	position: relative;
+	height: 236px;
+	flex-shrink: 0;
+	border-radius: 18px;
+	overflow: hidden;
+	transform-origin: center center;
+	cursor: pointer;
+	background: rgba(255, 255, 255, 0.05);
+	border: 1.5px solid rgba(255, 255, 255, 0.09);
+	box-sizing: border-box;
+	/* No z-index transition so active cards jump to front layer immediately */
+	transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+		transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+		border-color 0.25s ease,
+		box-shadow 0.25s ease,
+		opacity 0.25s ease,
+		filter 0.25s ease;
+}
+
+/* Compressed Sibling Preview Cards: flank symmetrically on both sides */
+.wallpaper-slanted-card.is-preview {
+	width: 90px;
+	opacity: 0.7;
+	filter: brightness(0.9);
+	z-index: 2;
+	transform: skewX(-10deg) scale(0.97);
+}
+
+/* Subtle preview hover: sleek highlight without jumping activeIndex */
+.wallpaper-slanted-card.is-preview:hover {
+	opacity: 0.92;
+	filter: brightness(0.98);
+	border-color: rgba(255, 255, 255, 0.32);
+	transform: skewX(-10deg) scale(0.99) translateY(-2px);
+	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* Expanded Hero Card: Center anchor, comes to front, illuminated */
+.wallpaper-slanted-card.is-hero {
+	width: 420px;
+	opacity: 1;
+	filter: brightness(1);
+	z-index: 50; /* Sits cleanly on top of all adjacent cards */
+	transform: skewX(-10deg) scale(1.02);
+	border-color: rgba(255, 255, 255, 0.38);
+	box-shadow: 0 20px 52px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.wallpaper-slanted-card.is-current {
+	border-color: #0a84ff;
+	box-shadow: 0 20px 52px rgba(0, 0, 0, 0.85), 0 0 26px rgba(10, 132, 255, 0.42);
+}
+
+.wallpaper-slanted-card.is-applying {
+	border-color: #30d158;
+	box-shadow: 0 20px 52px rgba(0, 0, 0, 0.85), 0 0 30px rgba(48, 209, 88, 0.55);
+}
+
+/* Slanted Thumbnail Viewport */
+.wallpaper-slanted-thumb {
+	position: relative;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Counter-skewed Image: preserves natural 16:9 aspect ratio with zero distortion */
+.wallpaper-slanted-thumb img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	image-rendering: -webkit-optimize-contrast;
+	image-rendering: high-quality;
+	transform: skewX(10deg) scale(1.36);
+	transition: transform 0.35s ease;
+}
+
+.wallpaper-slanted-card.is-hero:hover .wallpaper-slanted-thumb img {
+	transform: skewX(10deg) scale(1.4);
+}
+
+.wallpaper-placeholder {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	height: 100%;
+	transform: skewX(10deg);
+	color: rgba(255, 255, 255, 0.25);
+}
+
+/* Active Desktop Wallpaper Badge */
+.wallpaper-active-badge {
+	position: absolute;
+	top: 10px;
+	right: 10px;
+	z-index: 7;
+	transform: skewX(10deg);
+	background: #0a84ff;
+	color: #ffffff;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+/* Applying Notification Badge */
+.wallpaper-applying-badge {
+	position: absolute;
+	top: 10px;
+	left: 10px;
+	z-index: 7;
+	transform: skewX(10deg);
+	background: #30d158;
+	color: #000000;
+	font-size: 10.5px;
+	font-weight: 700;
+	padding: 3px 9px;
+	border-radius: 999px;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+/* Virtualization Spacers */
+.wallpaper-spacer-left,
+.wallpaper-spacer-right {
+	height: 1px;
+	pointer-events: none;
+	visibility: hidden;
+}
+
