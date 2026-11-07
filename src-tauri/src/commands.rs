@@ -5,7 +5,12 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Window};
 use windows::core::Interface;
 use windows::Win32::Foundation::{HWND, LPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, MessageBeep, MB_ICONEXCLAMATION};
+use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, MB_ICONEXCLAMATION};
+
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBeep(sound_type: u32) -> i32;
+}
 
 use crate::services::{
     disable_dock_appbar, enum_windows_proc, register_dock_appbar, sync_overlays,
@@ -37,7 +42,7 @@ pub fn start_task_alarm() {
     *thread_slot = Some(thread::spawn(|| {
         while !TASK_ALARM_STOP.load(Ordering::SeqCst) {
             unsafe {
-                let _ = MessageBeep(MB_ICONEXCLAMATION);
+                let _ = MessageBeep(MB_ICONEXCLAMATION.0);
             }
             for _ in 0..14 {
                 if TASK_ALARM_STOP.load(Ordering::SeqCst) {
